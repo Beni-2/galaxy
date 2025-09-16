@@ -1,0 +1,295 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Particle Orbit</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            cursor: move;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100vh;
+        }
+    </style>
+</head>
+<body>
+    <!-- Video element for the texture. It is hidden and plays inline. -->
+    <video id="video" src="jump.mp4" crossOrigin="anonymous" loop playsinline style="display: none;"></video>
+    
+    <!-- Audio element for background music. It is hidden and loops. -->
+    <audio id="audio" src="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3" loop ></audio>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+        window.onload = function () {
+            // --- Scene Setup ---
+            const scene = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            const renderer = new THREE.WebGLRenderer({ antialias: true });
+            
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.body.appendChild(renderer.domElement);
+            camera.position.set(0, 0, 10); // Centered camera position
+            camera.lookAt(0, 0, 0);
+
+            // --- Video Placeholder & Glowing Rings ---
+            const placeholderGroup = new THREE.Group();
+
+            // Video texture from the video element
+            const video = document.getElementById('video');
+            video.load();
+            const videoTexture = new THREE.VideoTexture(video);
+            
+            // Circular placeholder for the video
+            const placeholderRadius = 5.0; 
+            const placeholderGeometry = new THREE.CircleGeometry(placeholderRadius, 64);
+            const placeholderMaterial = new THREE.MeshBasicMaterial({ map: videoTexture, color: 0x00ff00, side: THREE.DoubleSide });
+            const placeholder = new THREE.Mesh(placeholderGeometry, placeholderMaterial);
+            placeholderGroup.add(placeholder);
+
+            // Glowing yellow ring around the placeholder
+            const glowRingGeometry = new THREE.RingGeometry(placeholderRadius * 1.05, placeholderRadius * 1.25, 64);
+            const glowRingCanvas = document.createElement('canvas');
+            glowRingCanvas.width = 16;
+            glowRingCanvas.height = 16;
+            const rctx = glowRingCanvas.getContext('2d');
+            const glowRingGradient = rctx.createRadialGradient(8, 8, 0, 8, 8, 8);
+            glowRingGradient.addColorStop(0, 'rgba(255, 255, 0, 1)');
+            glowRingGradient.addColorStop(0.5, 'rgba(255, 140, 0, 0.8)');
+            glowRingGradient.addColorStop(1, 'rgba(255, 69, 0, 0)');
+            rctx.fillStyle = glowRingGradient;
+            rctx.fillRect(0, 0, 16, 16);
+            const glowRingTexture = new THREE.CanvasTexture(glowRingCanvas);
+
+            const glowRingMaterial = new THREE.MeshBasicMaterial({
+                map: glowRingTexture,
+                transparent: true,
+                side: THREE.DoubleSide,
+                blending: THREE.AdditiveBlending
+            });
+            const glowRing = new THREE.Mesh(glowRingGeometry, glowRingMaterial);
+            placeholderGroup.add(glowRing);
+            
+            scene.add(placeholderGroup);
+
+            // --- Particle Swarm (Encircling Orb) ---
+            const particleCount = 5000;
+            const particles = new THREE.Group();
+            scene.add(particles);
+
+            const particleGeometry = new THREE.SphereGeometry(0.05, 16, 16);
+            const particleMaterial = new THREE.MeshBasicMaterial({
+                color: 0xff4500, // Molten glow color
+                blending: THREE.AdditiveBlending
+            });
+            const sparkMaterial = new THREE.MeshBasicMaterial({
+                color: 0xffffff, // White for the spark effect
+                blending: THREE.AdditiveBlending
+            });
+
+            const clearPathRadius = placeholderRadius * 2; // Create a clearance zone
+            const clearanceZoneZ = 15;
+            
+            function createParticle() {
+                const particle = new THREE.Mesh(particleGeometry, particleMaterial.clone());
+                
+                let r, theta, phi;
+                let particlePos = new THREE.Vector3();
+
+                // Loop until a particle is placed outside the clear path
+                do {
+                    r = 10 + Math.random() * 5; // Distance from center
+                    theta = Math.random() * Math.PI * 2;
+                    phi = Math.acos(Math.random() * 2 - 1);
+                    
+                    particlePos.set(
+                        r * Math.sin(phi) * Math.cos(theta),
+                        r * Math.sin(phi) * Math.sin(theta),
+                        r * Math.cos(phi)
+                    );
+                } while (particlePos.length() < clearPathRadius && particlePos.z < clearanceZoneZ && particlePos.z > -clearanceZoneZ);
+
+                particle.position.copy(particlePos);
+                
+                // Assign a random initial velocity
+                particle.userData.velocity = new THREE.Vector3(
+                    (Math.random() - 0.5) * 0.1,
+                    (Math.random() - 0.5) * 0.1,
+                    (Math.random() - 0.5) * 0.1
+                );
+                particle.userData.sparking = false;
+                particle.userData.sparkTime = 0;
+                return particle;
+            }
+
+            for (let i = 0; i < particleCount; i++) {
+                particles.add(createParticle());
+            }
+
+            // --- Camera Controls & Interaction ---
+            const sparkDistance = 4;
+            const sparkDuration = 200; // milliseconds
+            const minCameraZ = placeholderRadius / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+            const maxCameraZ = 20; // Updated max zoom out distance
+
+            let cameraState = 'stop';
+            let isMouseDown = false;
+            let mouseX = 0, mouseY = 0;
+
+            const audio = document.getElementById('audio');
+
+            // Start video and audio playback on first user interaction
+            renderer.domElement.addEventListener('click', (event) => {
+                 if (video.paused) {
+                    video.play();
+                }
+                if (audio.paused) {
+                    audio.muted = false;
+                    audio.play();
+                }
+
+                // Left mouse button click to change camera state
+                if (event.button === 0) {
+                    if (cameraState === 'stop') {
+                        cameraState = 'move_in';
+                    } else if (cameraState === 'move_in') {
+                        cameraState = 'move_out';
+                    } else if (cameraState === 'move_out') {
+                        cameraState = 'stop';
+                    }
+                }
+            });
+
+            document.addEventListener('mousedown', (event) => {
+                isMouseDown = true;
+                mouseX = event.clientX;
+                mouseY = event.clientY;
+            });
+
+            document.addEventListener('mouseup', () => {
+                isMouseDown = false;
+            });
+
+            document.addEventListener('mousemove', (event) => {
+                if (isMouseDown) {
+                    const deltaX = event.clientX - mouseX;
+                    const deltaY = event.clientY - mouseY;
+
+                    particles.rotation.y += deltaX * 0.005;
+                    particles.rotation.x += deltaY * 0.005;
+
+                    mouseX = event.clientX;
+                    mouseY = event.clientY;
+                }
+            });
+
+            // Touch event listeners for mobile responsiveness
+            document.addEventListener('touchstart', (event) => {
+                isMouseDown = true;
+                mouseX = event.touches[0].clientX;
+                mouseY = event.touches[0].clientY;
+            });
+
+            document.addEventListener('touchend', () => {
+                isMouseDown = false;
+            });
+
+            document.addEventListener('touchmove', (event) => {
+                if (isMouseDown) {
+                    const deltaX = event.touches[0].clientX - mouseX;
+                    const deltaY = event.touches[0].clientY - mouseY;
+
+                    particles.rotation.y += deltaX * 0.005;
+                    particles.rotation.x += deltaY * 0.005;
+
+                    mouseX = event.touches[0].clientX;
+                    mouseY = event.touches[0].clientY;
+                }
+            });
+
+            // --- Animation Loop ---
+            function animate() {
+                requestAnimationFrame(animate);
+
+                // Make the placeholder always face the camera
+                placeholderGroup.lookAt(camera.position);
+
+                const cameraPosition = camera.position.clone();
+
+                particles.children.forEach(particle => {
+                    // Check if particle is in the clearance zone and reset it
+                    const particleWorldPos = new THREE.Vector3();
+                    particle.getWorldPosition(particleWorldPos);
+                    const isParticleInFrontOfVideo = particleWorldPos.length() < placeholderRadius + 0.1 && Math.abs(particleWorldPos.z) < 1;
+                    if (isParticleInFrontOfVideo) {
+                        const newParticle = createParticle();
+                        particle.position.copy(newParticle.position);
+                        particle.userData.velocity.copy(newParticle.userData.velocity);
+                    }
+
+                    // Update particle position based on velocity
+                    particle.position.add(particle.userData.velocity);
+
+                    // Add a softer gravitational pull towards the center
+                    const gravity = new THREE.Vector3().subVectors(new THREE.Vector3(0, 0, 0), particle.position).normalize().multiplyScalar(0.0002);
+                    particle.userData.velocity.add(gravity);
+                    
+                    // Add a slight velocity decay for smoother movement
+                    particle.userData.velocity.multiplyScalar(0.99);
+
+                    // Check for proximity to camera to create spark effect
+                    const particleWorldPosition = new THREE.Vector3();
+                    particle.getWorldPosition(particleWorldPosition);
+                    if (particleWorldPosition.distanceTo(cameraPosition) < sparkDistance) {
+                         if (!particle.userData.sparking) {
+                            particle.material = sparkMaterial;
+                            particle.userData.sparking = true;
+                            particle.userData.sparkTime = performance.now();
+                        }
+                    }
+
+                    // Revert material after spark duration
+                    if (particle.userData.sparking && (performance.now() - particle.userData.sparkTime) > sparkDuration) {
+                        particle.material = particleMaterial;
+                        particle.userData.sparking = false;
+                    }
+                });
+                
+                // Rotate the entire particle group around the center
+                particles.rotation.y += 0.003; // Adjusted rotation speed for a smoother feel
+
+                // Handle camera movement based on state
+                if (cameraState === 'move_in') {
+                    camera.position.z -= 0.1;
+                } else if (cameraState === 'move_out') {
+                    camera.position.z += 0.1;
+                }
+
+                // Clamp camera position to the defined limits
+                camera.position.z = THREE.MathUtils.clamp(camera.position.z, minCameraZ, maxCameraZ);
+
+                renderer.render(scene, camera);
+            }
+
+            // --- Handle Window Resize ---
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+
+            // Start the animation
+            animate();
+        };
+    </script>
+</body>
+</html>
